@@ -6,17 +6,18 @@
   const number = n => new Intl.NumberFormat('ru-KZ',{maximumFractionDigits:3}).format(Number(n||0));
   const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const dateText = d => { const x=d?.toDate ? d.toDate() : (d ? new Date(d) : null); return x && !isNaN(x) ? x.toLocaleString('ru-KZ') : '—'; };
-  const roles = {admin:'Администратор',operator:'Оператор',accountant:'Бухгалтер',viewer:'Просмотр'};
+  const roles = {admin:'Администратор',operator:'Оператор',dealer:'Дилер',accountant:'Бухгалтер',viewer:'Просмотр',client:'Клиент — ожидает роль'};
   const allowed = {
     dashboard:['admin','operator','accountant','viewer'],
     dealers:['admin','operator'],
     subscribers:['admin','operator'],
-    readings:['admin','operator'],
-    transactions:['admin','operator','accountant'],
+    readings:['admin','operator','dealer'],
+    transactions:['admin','operator','dealer','accountant'],
     users:['admin'],
     settings:['admin']
   };
   let auth, db, currentUser=null, profile=null, data={dealers:[],srps:[],subscribers:[],transactions:[],users:[],settings:{tariff:35}}, importRows=[], importIssues=[];
+  const pageState={subscribers:1,transactions:1,pageSize:25};
   const collectionNames={dealers:'dealers',srps:'srps',subscribers:'subscribers',transactions:'transactions',users:'users'};
   function showMessage(msg,type='info'){const el=$('global-message');el.className='notice '+(type==='error'?'warning':'info');el.textContent=msg;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),6500)}
   function setLoginError(msg){$('login-error').textContent=msg||''}
@@ -26,7 +27,7 @@
   }
   function setBusy(form,busy){const b=form.querySelector('button[type="submit"]');if(b){b.disabled=busy;b.dataset.original ||= b.textContent;b.textContent=busy?'Сохранение…':b.dataset.original}}
   async function writeAudit(action,details={}) {
-    await db.collection('auditLogs').add({action,details,actorUid:currentUser.uid,actorEmail:currentUser.email||'',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    await db.collection('auditLogs').add({action,details,actorUid:currentUser.uid,actorEmail:currentUser.email||'',actorName:profile?.displayName||currentUser.displayName||'',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
   }
   async function loadCollection(name,orderField='createdAt'){
     try { const snap=await db.collection(name).orderBy(orderField,'desc').limit(1000).get(); return snap.docs.map(d=>({id:d.id,...d.data()})); }
@@ -67,23 +68,27 @@
   }
   function renderSubscribers(){
     const q=($('subscriber-search').value||'').trim().toLowerCase();
-    const list=data.subscribers.filter(s=>[s.accountNumber,s.name,s.address,s.phone,s.meterNumber].some(v=>String(v||'').toLowerCase().includes(q)));
-    $('subscriber-count').textContent=`Показано ${list.length} из ${data.subscribers.length}`;
-    $('subscribers-table').innerHTML=table(['Лицевой счёт','Абонент','Адрес','Счётчик','ШРП','Показание','Статус'],list.map(s=>{
+    const list=data.subscribers.filter(s=>[s.accountNumber,s.name,s.address,s.phone,s.meterNumber,s.iin,s.invoiceNumber].some(v=>String(v||'').toLowerCase().includes(q)));
+    const pages=Math.max(1,Math.ceil(list.length/pageState.pageSize));pageState.subscribers=Math.min(pageState.subscribers,pages);const start=(pageState.subscribers-1)*pageState.pageSize;const visible=list.slice(start,start+pageState.pageSize);
+    $('subscriber-count').textContent=`Показано ${list.length?start+1:0}–${Math.min(start+pageState.pageSize,list.length)} из ${list.length} · страница ${pageState.subscribers}/${pages}`;
+    $('subscribers-table').innerHTML=table(['Лицевой счёт','Абонент','Адрес','Счётчик','ШРП','ИИН','Показание','Статус'],visible.map(s=>{
       const srp=data.srps.find(x=>x.id===s.srpId);
-      return `<tr><td><strong>${escapeHtml(s.accountNumber)}</strong></td><td>${escapeHtml(s.name)}<br><span class="muted">${escapeHtml(s.phone||'')}</span></td><td>${escapeHtml(s.address)}</td><td>${escapeHtml(s.meterNumber)}</td><td>${escapeHtml(srp?.name||'—')}</td><td>${number(s.currentReading)} м³</td><td><span class="badge ${s.active===false?'off':''}">${s.active===false?'Отключён':'Активен'}</span></td></tr>`;
+      return `<tr><td><strong>${escapeHtml(s.accountNumber)}</strong></td><td>${escapeHtml(s.name)}<br><span class="muted">${escapeHtml(s.phone||'')}</span></td><td>${escapeHtml(s.address)}</td><td>${escapeHtml(s.meterNumber)}</td><td>${escapeHtml(srp?.name||'—')}</td><td>${escapeHtml(s.iin||'—')}</td><td>${number(s.currentReading)} м³</td><td><span class="badge ${s.active===false?'off':''}">${s.active===false?'Отключён':'Активен'}</span></td></tr>`;
     }), 'Абоненты пока не добавлены');
+    const pager=$('subscriber-pagination');if(pager)pager.innerHTML=`<button class="btn secondary" ${pageState.subscribers<=1?'disabled':''} data-page="prev">Назад</button><span>Страница ${pageState.subscribers} из ${pages}</span><button class="btn secondary" ${pageState.subscribers>=pages?'disabled':''} data-page="next">Далее</button>`;
   }
-  function transactionRows(list){return list.map(t=>`<tr><td>${escapeHtml(dateText(t.createdAt))}</td><td><strong>${escapeHtml(t.targetName||'—')}</strong></td><td>${escapeHtml(t.typeLabel||t.type||'—')}</td><td>${number(t.volume||0)} м³</td><td>${t.totalSum==null?'—':money(t.totalSum)}</td><td>${escapeHtml(t.paymentMethodLabel||'—')}</td><td>${escapeHtml(t.actorEmail||'')}</td></tr>`)}
+  function transactionRows(list){return list.map(t=>`<tr><td>${escapeHtml(dateText(t.createdAt))}</td><td><strong>${escapeHtml(t.targetName||'—')}</strong><br><span class="muted">${escapeHtml(t.iin||t.accountNumber||t.invoiceNumber||'')}</span></td><td>${escapeHtml(t.typeLabel||t.type||'—')}</td><td>${number(t.volume||0)} м³</td><td>${t.totalSum==null?'—':money(t.totalSum)}</td><td>${escapeHtml(t.paymentMethodLabel||'—')}</td><td>${escapeHtml(t.actorName||t.actorEmail||'—')}<br><span class="muted">${escapeHtml(t.actorEmail||'')}</span></td></tr>`)}
   function renderTransactions(){
     const q=($('transaction-search').value||'').toLowerCase().trim();
-    const list=data.transactions.filter(t=>[t.targetName,t.type,t.typeLabel,t.actorEmail].some(v=>String(v||'').toLowerCase().includes(q)));
-    $('transactions-table').innerHTML=table(['Дата','Объект','Операция','Расход','Сумма','Способ','Пользователь'],transactionRows(list),'Операций пока нет');
+    const list=data.transactions.filter(t=>[t.targetName,t.type,t.typeLabel,t.actorEmail,t.accountNumber,t.iin,t.invoiceNumber,t.actorName].some(v=>String(v||'').toLowerCase().includes(q)));
+    const pages=Math.max(1,Math.ceil(list.length/pageState.pageSize));pageState.transactions=Math.min(pageState.transactions,pages);const start=(pageState.transactions-1)*pageState.pageSize;const visible=list.slice(start,start+pageState.pageSize);
+    $('transactions-table').innerHTML=table(['Дата','Объект','Операция','Расход','Сумма','Способ','Пользователь'],transactionRows(visible),'Операций пока нет');
+    const pager=$('transaction-pagination');if(pager)pager.innerHTML=`<button class="btn secondary" ${pageState.transactions<=1?'disabled':''} data-page="prev">Назад</button><span>Страница ${pageState.transactions} из ${pages} · всего ${list.length}</span><button class="btn secondary" ${pageState.transactions>=pages?'disabled':''} data-page="next">Далее</button>`;
   }
   function renderDashboardTransactions(){$('dashboard-transactions').innerHTML=table(['Дата','Объект','Операция','Сумма'],data.transactions.slice(0,5).map(t=>`<tr><td>${escapeHtml(dateText(t.createdAt))}</td><td><strong>${escapeHtml(t.targetName||'—')}</strong></td><td>${escapeHtml(t.typeLabel||t.type||'—')}</td><td>${t.totalSum==null?'—':money(t.totalSum)}</td></tr>`),'Операций пока нет')}
   function renderUsers(){
     if(profile.role!=='admin')return;
-    $('users-table').innerHTML=table(['UID','Имя','Email','Роль','Статус'],data.users.map(u=>`<tr><td><code>${escapeHtml(u.id)}</code></td><td>${escapeHtml(u.displayName||'—')}</td><td>${escapeHtml(u.email||'—')}</td><td>${escapeHtml(roles[u.role]||u.role||'—')}</td><td><span class="badge ${u.active===false?'off':''}">${u.active===false?'Заблокирован':'Активен'}</span></td></tr>`),'Профили пользователей не созданы');
+    $('users-table').innerHTML=table(['UID','Имя / ИИН','Email','Роль','Показаний проверено','Статус','Действие'],data.users.map(u=>{const count=data.transactions.filter(t=>t.actorUid===u.id&&(t.type==='subscriber_reading'||t.type==='srp_reading')).length;return `<tr><td><code>${escapeHtml(u.id)}</code></td><td><strong>${escapeHtml(u.displayName||'—')}</strong><br><span class="muted">${escapeHtml(u.iin||'')}</span></td><td>${escapeHtml(u.email||'—')}</td><td>${escapeHtml(roles[u.role]||u.role||'—')}</td><td><strong>${count}</strong></td><td><span class="badge ${u.active===false?'off':''}">${u.active===false?'Заблокирован':'Активен'}</span></td><td><button class="btn secondary" data-assign-user="${escapeHtml(u.id)}" data-name="${escapeHtml(u.displayName||'')}">Назначить</button></td></tr>`}),'Профили пользователей не созданы');
   }
   function refreshReadingTargets(){
     const type=$('reading-type').value;
@@ -94,6 +99,7 @@
   }
   function updateCalculation(){
     const type=$('reading-type').value,id=$('reading-target').value,target=(type==='subscriber'?data.subscribers:data.srps).find(x=>x.id===id),newVal=Number($('reading-value').value);
+    if(profile?.role==='dealer'&&type!=='subscriber'){ $('reading-type').value='subscriber'; }
     if(!target||$('reading-value').value===''){ $('calculation-preview').textContent='Выберите объект и введите новое показание для предварительного расчёта.';return; }
     const volume=newVal-Number(target.currentReading||0),srp=type==='subscriber'?data.srps.find(s=>s.id===target.srpId):target,dealer=srp?data.dealers.find(d=>d.id===srp.dealerId):null;
     if(!Number.isFinite(newVal)||newVal<Number(target.currentReading||0)){ $('calculation-preview').textContent=`Ошибка: новое показание должно быть не меньше ${number(target.currentReading)} м³.`;return; }
@@ -112,9 +118,13 @@
   function errorText(e){if(e.code==='permission-denied')return 'Доступ запрещён правилами Firestore. Проверьте профиль роли и Security Rules.';if(e.code==='already-exists')return 'Запись с таким идентификатором уже существует.';return e.message||'Не удалось выполнить операцию.'}
   async function startApp(user){
     currentUser=user;
-    const snap=await db.collection('users').doc(user.uid).get();
-    if(!snap.exists||snap.data().active===false){await auth.signOut();$('login-screen').classList.remove('hidden');$('app').classList.add('hidden');setLoginError('Для этой учётной записи нет активного профиля. Обратитесь к администратору.');return}
+    const userRef=db.collection('users').doc(user.uid);let snap=await userRef.get();
+    if(!snap.exists){await userRef.set({email:user.email||'',displayName:'',role:'client',active:true,createdAt:firebase.firestore.FieldValue.serverTimestamp(),authProvider:'google'});snap=await userRef.get();}
+    if(snap.data().active===false){await auth.signOut();$('login-screen').classList.remove('hidden');$('app').classList.add('hidden');setLoginError('Учётная запись заблокирована. Обратитесь к администратору.');return}
     profile={id:snap.id,...snap.data(),email:snap.data().email||user.email};
+    if(profile.role==='client'&&!profile.displayName){showProfileSetup();return;}
+    if(profile.role==='client'){showPendingRole();return;}
+    if(profile.role==='dealer'){const srpOption=$('reading-type').querySelector('option[value="srp"]');if(srpOption)srpOption.disabled=true;$('reading-type').value='subscriber';}
     $('login-screen').classList.add('hidden');$('app').classList.remove('hidden');
     $('user-name').textContent=profile.displayName||user.email||'Пользователь';$('user-role').textContent=roles[profile.role]||profile.role;$('user-avatar').textContent=(profile.displayName||user.email||'U').slice(0,1).toUpperCase();
     document.querySelectorAll('.nav-item').forEach(b=>{const roleList=(b.dataset.roles||'admin,operator,accountant,viewer').split(',');b.classList.toggle('hidden',!roleList.includes(profile.role));});
@@ -122,14 +132,21 @@
     try{await refreshData();switchView('dashboard')}catch(e){showMessage(errorText(e),'error')}
   }
   async function init(){
-    if(!firebaseReady()){ $('config-warning').classList.remove('hidden');$('login-form').addEventListener('submit',e=>{e.preventDefault();setLoginError('Настройте firebase-config.js перед входом.')});return}
-    try{firebase.initializeApp(window.GASCONTROL_FIREBASE_CONFIG);auth=firebase.auth();db=firebase.firestore();auth.onAuthStateChanged(user=>{if(user)startApp(user).catch(e=>{console.error(e);setLoginError(errorText(e))});else{$('app').classList.add('hidden');$('login-screen').classList.remove('hidden')}})}
+    if(!firebaseReady()){ $('config-warning').classList.remove('hidden');$('google-login').disabled=true;$('google-login').textContent='Сначала настройте Firebase';$('login-form').addEventListener('submit',e=>{e.preventDefault();setLoginError('Настройте firebase-config.js перед входом.')});return}
+    try{firebase.initializeApp(window.GASCONTROL_FIREBASE_CONFIG);auth=firebase.auth();db=firebase.firestore();auth.onAuthStateChanged(user=>{if(user)startApp(user).catch(e=>{console.error(e);setLoginError(errorText(e))});else{$('app').classList.add('hidden');$('login-screen').classList.remove('hidden');$('login-form').classList.remove('hidden');$('profile-setup-form').classList.add('hidden');$('pending-role').classList.add('hidden');$('login-error').textContent=''}})}
     catch(e){setLoginError('Ошибка инициализации Firebase: '+e.message)}
   }
-  $('login-form').addEventListener('submit',async e=>{e.preventDefault();setLoginError('');try{await auth.signInWithEmailAndPassword($('login-email').value.trim(),$('login-password').value)}catch(err){setLoginError(err.code==='auth/invalid-credential'?'Неверный email или пароль.':errorText(err))}});
+  $('login-form').addEventListener('submit',async e=>{e.preventDefault();setLoginError('Для входа используйте кнопку «Продолжить с Google».');});
+  $('google-login').addEventListener('click',async()=>{setLoginError('');try{const provider=new firebase.auth.GoogleAuthProvider();await auth.signInWithPopup(provider)}catch(err){setLoginError(errorText(err))}});
+  function showProfileSetup(){ $('login-form').classList.add('hidden');$('profile-setup').classList.remove('hidden');$('login-error').textContent='';$('profile-email').textContent=currentUser.email||''; }
+  function showPendingRole(){ $('login-form').classList.add('hidden');$('profile-setup').classList.add('hidden');$('pending-role').classList.remove('hidden');$('pending-email').textContent=profile.email||'';$('pending-name').textContent=profile.displayName||'Профиль заполнен';$('login-screen').classList.remove('hidden');$('app').classList.add('hidden'); }
+  $('profile-setup-form').addEventListener('submit',async e=>{e.preventDefault();const displayName=$('profile-fullname').value.trim(),iin=$('profile-iin').value.trim();if(displayName.length<5){setLoginError('Введите ФИО полностью.');return}try{await db.collection('users').doc(currentUser.uid).set({displayName,iin,email:currentUser.email||'',role:'client',active:true,profileCompletedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});profile={...profile,displayName,iin,role:'client'};showPendingRole()}catch(err){setLoginError(errorText(err))}});
+  $('google-logout').addEventListener('click',()=>auth.signOut());
   $('logout-btn').addEventListener('click',()=>auth.signOut());
   $('nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(b)switchView(b.dataset.view)});
-  $('subscriber-search').addEventListener('input',renderSubscribers);$('transaction-search').addEventListener('input',renderTransactions);
+  $('users-table').addEventListener('click',e=>{const b=e.target.closest('[data-assign-user]');if(!b)return;$('role-uid').value=b.dataset.assignUser;$('role-display-name').value=b.dataset.name||'';$('role-form').scrollIntoView({behavior:'smooth',block:'center'});});
+  $('subscriber-search').addEventListener('input',()=>{pageState.subscribers=1;renderSubscribers()});$('transaction-search').addEventListener('input',()=>{pageState.transactions=1;renderTransactions()});
+  document.addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(!b||b.disabled)return;const key=b.closest('#subscriber-pagination')?'subscribers':'transactions';pageState[key]+=b.dataset.page==='next'?1:-1;key==='subscribers'?renderSubscribers():renderTransactions()});
   $('reading-type').addEventListener('change',refreshReadingTargets);$('reading-target').addEventListener('change',updateCalculation);$('reading-value').addEventListener('input',updateCalculation);$('payment-method').addEventListener('change',updateCalculation);
   onForm('dealer-form',async()=>{const name=$('dealer-name').value.trim();const id='d_'+crypto.randomUUID();await createDoc('dealers',id,{name,balanceM3:Number($('dealer-balance').value),defaultFee:Number($('dealer-fee').value),createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});$('dealer-form').reset()});
   onForm('srp-form',async()=>{const id='srp_'+crypto.randomUUID(),reading=Number($('srp-reading').value);await createDoc('srps',id,{name:$('srp-name').value.trim(),dealerId:$('srp-dealer').value,currentReading:reading,prevReading:reading,createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});$('srp-form').reset()});
@@ -137,7 +154,7 @@
     const accountNumber=$('sub-account').value.trim(),query=await db.collection('subscribers').where('accountNumber','==',accountNumber).limit(1).get();
     if(!query.empty)throw new Error('Лицевой счёт уже существует: '+accountNumber);
     const id='sub_'+crypto.randomUUID(),reading=Number($('sub-reading').value);
-    await createDoc('subscribers',id,{accountNumber,name:$('sub-name').value.trim(),address:$('sub-address').value.trim(),phone:$('sub-phone').value.trim(),meterNumber:$('sub-meter').value.trim(),srpId:$('sub-srp').value,currentReading:reading,prevReading:reading,active:true,createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});$('subscriber-form').reset();
+    await createDoc('subscribers',id,{accountNumber,name:$('sub-name').value.trim(),address:$('sub-address').value.trim(),phone:$('sub-phone').value.trim(),meterNumber:$('sub-meter').value.trim(),iin:$('sub-iin').value.trim(),invoiceNumber:$('sub-invoice').value.trim(),srpId:$('sub-srp').value,currentReading:reading,prevReading:reading,active:true,createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});$('subscriber-form').reset();
   });
   onForm('reading-form',async()=>{
     const type=$('reading-type').value,id=$('reading-target').value,newVal=Number($('reading-value').value);
@@ -158,13 +175,13 @@
       /* Volume is recorded against the dealer only for subscriber readings in this build.
          SRP readings are tracked separately to avoid accidental duplicate subtraction at both levels. */
       if(type==='subscriber'&&dealerSnap.exists)tx.update(dealerRef,{balanceM3:Number(dealer.balanceM3||0)-volume,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
-      tx.set(transactionRef,{type:type==='subscriber'?'subscriber_reading':'srp_reading',typeLabel:type==='subscriber'?'Начисление абоненту':'Показание ШРП',targetId:id,targetName:target.name||target.accountNumber,volume,previousReading:previous,newReading:newVal,baseSum,fee,totalSum,paymentMethod,paymentMethodLabel:paymentMethod==='dealer'?'Через дилера':paymentMethod==='direct'?'Напрямую':'Без начисления',tariff:Number(data.settings.tariff||0),actorUid:currentUser.uid,actorEmail:currentUser.email||'',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      tx.set(transactionRef,{type:type==='subscriber'?'subscriber_reading':'srp_reading',typeLabel:type==='subscriber'?'Начисление абоненту':'Показание ШРП',targetId:id,targetName:target.name||target.accountNumber,volume,previousReading:previous,newReading:newVal,baseSum,fee,totalSum,paymentMethod,paymentMethodLabel:paymentMethod==='dealer'?'Через дилера':paymentMethod==='direct'?'Напрямую':'Без начисления',tariff:Number(data.settings.tariff||0),actorUid:currentUser.uid,actorEmail:currentUser.email||'',actorName:profile.displayName||currentUser.displayName||'',accountNumber:target.accountNumber||'',iin:target.iin||'',invoiceNumber:target.invoiceNumber||'',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
       tx.set(db.collection('auditLogs').doc('audit_'+crypto.randomUUID()),{action:'reading:'+type,targetId:id,actorUid:currentUser.uid,actorEmail:currentUser.email||'',createdAt:firebase.firestore.FieldValue.serverTimestamp()});
     });
     $('reading-form').reset();refreshReadingTargets();showMessage('Показание записано, операция добавлена в историю.');
   });
   onForm('settings-form',async()=>{const tariff=Number($('setting-tariff').value);if(!Number.isFinite(tariff)||tariff<0)throw new Error('Тариф должен быть неотрицательным числом.');await db.collection('settings').doc('main').set({tariff,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:currentUser.uid},{merge:true});await writeAudit('settings:update',{tariff})});
-  onForm('role-form',async()=>{const uid=$('role-uid').value.trim(),displayName=$('role-display-name').value.trim(),role=$('role-value').value,active=$('role-active').value==='true';if(!/^(admin|operator|accountant|viewer)$/.test(role))throw new Error('Недопустимая роль.');await db.collection('users').doc(uid).set({displayName,role,active,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:currentUser.uid},{merge:true});await writeAudit('user:role:update',{uid,role,active});$('role-form').reset()});
+  onForm('role-form',async()=>{const uid=$('role-uid').value.trim(),displayName=$('role-display-name').value.trim(),role=$('role-value').value,active=$('role-active').value==='true';if(!/^(admin|operator|dealer|accountant|viewer)$/.test(role))throw new Error('Недопустимая роль.');await db.collection('users').doc(uid).set({displayName,role,active,updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:currentUser.uid},{merge:true});await writeAudit('user:role:update',{uid,role,active});$('role-form').reset()});
   $('subscriber-file').addEventListener('change',()=>{$('selected-file').textContent=$('subscriber-file').files[0]?.name||'Файл не выбран';$('preview-import').disabled=!$('subscriber-file').files.length;$('run-import').disabled=true;$('import-preview').innerHTML='';$('import-status').textContent=''});
   $('preview-import').addEventListener('click',async()=>{
     try{
@@ -179,11 +196,12 @@
         phone:['phone','телефон','номертелефона'],
         meterNumber:['meternumber','номერჃсчётчика','номерсчётчика','номерсчетчика','счётчик','счетчик'],
         srpName:['srpname','шрп','номершрп','названиешрп'],
-        currentReading:['currentreading','начальноепоказание','показание','показаниям³','показаниеприборa']
+        currentReading:['currentreading','начальноепоказание','показание','показаниям³','показаниеприборa'],
+        iin:['iin','иин','иинабонента'],invoiceNumber:['invoicenumber','счётфактура','счетфактура','номерсчётафактуры','номерсчетафактуры']
       };
       const first=raw[0],map={};Object.keys(first).forEach(k=>{const n=norm(k);for(const [field,alts] of Object.entries(aliases))if(alts.map(norm).includes(n))map[field]=k});
       const required=['accountNumber','name','address','meterNumber','currentReading'];const missing=required.filter(k=>!map[k]);if(missing.length)throw new Error('Не найдены обязательные колонки: '+missing.join(', ')+'. Скачайте шаблон и сохраните заголовки.');
-      importRows=raw.map((r,i)=>({row:i+2,accountNumber:String(r[map.accountNumber]||'').trim(),name:String(r[map.name]||'').trim(),address:String(r[map.address]||'').trim(),phone:map.phone?String(r[map.phone]||'').trim():'',meterNumber:String(r[map.meterNumber]||'').trim(),srpName:map.srpName?String(r[map.srpName]||'').trim():'',currentReading:Number(String(r[map.currentReading]||'').replace(',','.'))}));
+      importRows=raw.map((r,i)=>({row:i+2,accountNumber:String(r[map.accountNumber]||'').trim(),name:String(r[map.name]||'').trim(),address:String(r[map.address]||'').trim(),phone:map.phone?String(r[map.phone]||'').trim():'',iin:map.iin?String(r[map.iin]||'').trim():'',invoiceNumber:map.invoiceNumber?String(r[map.invoiceNumber]||'').trim():'',meterNumber:String(r[map.meterNumber]||'').trim(),srpName:map.srpName?String(r[map.srpName]||'').trim():'',currentReading:Number(String(r[map.currentReading]||'').replace(',','.'))}));
       importIssues=[];const seen=new Set();
       importRows.forEach(r=>{if(!r.accountNumber||!r.name||!r.address||!r.meterNumber||!Number.isFinite(r.currentReading)||r.currentReading<0)importIssues.push({row:r.row,msg:'Пустое обязательное поле или неверное показание'});if(seen.has(r.accountNumber))importIssues.push({row:r.row,msg:'Дубликат лицевого счёта внутри файла'});seen.add(r.accountNumber);if(r.srpName&&!data.srps.some(s=>s.name.toLowerCase()===r.srpName.toLowerCase()))importIssues.push({row:r.row,msg:'ШРП не найден: '+r.srpName})});
       $('import-preview').innerHTML=table(['Строка','Лицевой счёт','Абонент','Адрес','Счётчик','ШРП','Показание'],importRows.slice(0,100).map(r=>`<tr><td>${r.row}</td><td>${escapeHtml(r.accountNumber)}</td><td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.address)}</td><td>${escapeHtml(r.meterNumber)}</td><td>${escapeHtml(r.srpName||$('import-srp-default').selectedOptions[0]?.textContent||'—')}</td><td>${number(r.currentReading)}</td></tr>`),'Нет строк для импорта');
@@ -203,7 +221,7 @@
         if(!srp)throw new Error(`Строка ${r.row}: не определён ШРП.`);
         const old=byAccount.get(r.accountNumber);
         if(old&&policy==='skip'){skipped++;continue}
-        const payload={accountNumber:r.accountNumber,name:r.name,address:r.address,phone:r.phone,meterNumber:r.meterNumber,srpId:srp.id,currentReading:r.currentReading,prevReading:r.currentReading,active:true,updatedAt:now,importedAt:now,importedBy:currentUser.uid};
+        const payload={accountNumber:r.accountNumber,name:r.name,address:r.address,phone:r.phone,iin:r.iin||'',invoiceNumber:r.invoiceNumber||'',meterNumber:r.meterNumber,srpId:srp.id,currentReading:r.currentReading,prevReading:r.currentReading,active:true,updatedAt:now,importedAt:now,importedBy:currentUser.uid};
         const ref=old?db.collection('subscribers').doc(old.id):db.collection('subscribers').doc('sub_'+crypto.randomUUID());
         if(old){batch.set(ref,payload,{merge:true});updated++}else{batch.set(ref,{...payload,createdAt:now});created++}
       }
@@ -215,7 +233,7 @@
     finally{btn.disabled=false;btn.textContent='Импортировать проверенные строки'}
   });
   function exportXlsx(name,rows){if(!rows.length){showMessage('Нет данных для экспорта.','error');return}const ws=XLSX.utils.json_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Данные');XLSX.writeFile(wb,name)}
-  $('export-subscribers').addEventListener('click',()=>exportXlsx('абоненты.xlsx',data.subscribers.map(s=>({accountNumber:s.accountNumber,name:s.name,address:s.address,phone:s.phone||'',meterNumber:s.meterNumber,srpName:data.srps.find(x=>x.id===s.srpId)?.name||'',currentReading:s.currentReading,active:s.active!==false}))));
+  $('export-subscribers').addEventListener('click',()=>exportXlsx('абоненты.xlsx',data.subscribers.map(s=>({accountNumber:s.accountNumber,name:s.name,address:s.address,phone:s.phone||'',iin:s.iin||'',invoiceNumber:s.invoiceNumber||'',meterNumber:s.meterNumber,srpName:data.srps.find(x=>x.id===s.srpId)?.name||'',currentReading:s.currentReading,active:s.active!==false}))));
   $('export-dealers').addEventListener('click',()=>exportXlsx('дилеры-и-ШРП.xlsx',data.dealers.map(d=>({dealer:d.name,balanceM3:d.balanceM3,fee:d.defaultFee,srps:data.srps.filter(s=>s.dealerId===d.id).map(s=>s.name).join(', ')}))));
   $('export-transactions').addEventListener('click',()=>exportXlsx('операции.xlsx',data.transactions.map(t=>({date:dateText(t.createdAt),target:t.targetName,type:t.typeLabel||t.type,volume:t.volume,baseSum:t.baseSum,fee:t.fee,totalSum:t.totalSum,tariff:t.tariff,paymentMethod:t.paymentMethodLabel,actor:t.actorEmail}))));
   init();

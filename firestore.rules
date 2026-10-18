@@ -2,59 +2,32 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function profileExists() {
-      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
-    function activeUser() {
-      return profileExists() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true;
-    }
-    function role() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
-    }
+    function profileExists() { return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function activeUser() { return profileExists() && profile().active == true; }
+    function role() { return profile().role; }
     function hasRole(roles) { return activeUser() && role() in roles; }
     function admin() { return hasRole(['admin']); }
     function operatorOrAdmin() { return hasRole(['admin','operator']); }
-    function financeReader() { return hasRole(['admin','operator','accountant']); }
+    function readingWriter() { return hasRole(['admin','operator','dealer']); }
+    function financeReader() { return hasRole(['admin','operator','dealer','accountant']); }
 
     match /users/{uid} {
-      allow read: if admin() || (signedIn() && request.auth.uid == uid && activeUser());
-      allow create, update, delete: if admin();
-    }
-    match /settings/{docId} {
-      allow read: if activeUser();
-      allow create, update: if admin();
-      allow delete: if false;
-    }
-    match /dealers/{id} {
-      allow read: if activeUser();
-      allow create, update: if operatorOrAdmin();
+      allow read: if admin() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.role == 'client' && request.resource.data.active == true;
+      allow update: if admin() || (signedIn() && request.auth.uid == uid && activeUser() && resource.data.role == 'client' && request.resource.data.role == 'client' && request.resource.data.active == true);
       allow delete: if admin();
     }
-    match /srps/{id} {
-      allow read: if activeUser();
-      allow create, update: if operatorOrAdmin();
-      allow delete: if admin();
-    }
-    match /subscribers/{id} {
-      allow read: if activeUser();
-      allow create, update: if operatorOrAdmin();
-      allow delete: if admin();
-    }
+    match /settings/{docId} { allow read: if activeUser(); allow create, update: if admin(); allow delete: if false; }
+    match /dealers/{id} { allow read: if activeUser(); allow create: if operatorOrAdmin(); allow update: if operatorOrAdmin() || (hasRole(['dealer']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['balanceM3','updatedAt'])); allow delete: if admin(); }
+    match /srps/{id} { allow read: if activeUser(); allow create, update: if operatorOrAdmin(); allow delete: if admin(); }
+    match /subscribers/{id} { allow read: if activeUser(); allow create: if operatorOrAdmin(); allow update: if operatorOrAdmin() || (hasRole(['dealer']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['prevReading','currentReading','updatedAt'])); allow delete: if admin(); }
     match /transactions/{id} {
       allow read: if financeReader();
-      allow create: if operatorOrAdmin() &&
-        request.resource.data.actorUid == request.auth.uid;
+      allow create: if readingWriter() && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
-    match /auditLogs/{id} {
-      allow read: if admin();
-      allow create: if activeUser() &&
-        request.resource.data.actorUid == request.auth.uid;
-      allow update, delete: if false;
-    }
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /auditLogs/{id} { allow read: if admin(); allow create: if activeUser() && request.resource.data.actorUid == request.auth.uid; allow update, delete: if false; }
+    match /{document=**} { allow read, write: if false; }
   }
 }
