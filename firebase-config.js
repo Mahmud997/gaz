@@ -2,10 +2,10 @@
    Firebase Console → Project settings → Your apps → Web app.
    Не вставляйте сюда приватные ключи сервисного аккаунта. */
 window.GASCONTROL_FIREBASE_CONFIG = {
-  apiKey: "PASTE_YOUR_FIREBASE_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_FIREBASE_APP_ID"
+   apiKey: "AIzaSyDsroKsq6IxIZyIQtHgZqZCNPotFee6SZE",
+  authDomain: "gascontrol-493e5.firebaseapp.com",
+  projectId: "gascontrol-493e5",
+  storageBucket: "gascontrol-493e5.firebasestorage.app",
+  messagingSenderId: "632325277938",
+  appId: "1:632325277938:web:3f3c5d23ef02103d14286b"
 };
