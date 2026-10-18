@@ -1,0 +1,14 @@
+{
+  "name": "gascontrol-erp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gas utility management ERP with Firebase Auth and Firestore",
+  "scripts": {
+    "deploy": "firebase deploy",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "deploy:rules": "firebase deploy --only firestore:rules"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.24.0"
+  }
+}
